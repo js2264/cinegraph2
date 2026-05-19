@@ -38,6 +38,9 @@ jobs:
           VITE_TMDB_API_KEY: ${{ vars.VITE_TMDB_API_KEY }}
         run: npm run build
 
+      - name: Copy CNAME for custom domain
+        run: cp CNAME dist/CNAME
+
       - name: Deploy to gh-pages branch
         uses: JamesIves/github-pages-deploy-action@v4
         with:
