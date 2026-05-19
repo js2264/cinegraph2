@@ -94,18 +94,6 @@ const COLOR_MODES = [
   { id: "year",  label: "Year"  },
 ]
 
-// ── Seed movies for "Surprise me" ─────────────────────────────────────────────
-const SEED_MOVIES = [
-  { id: "603",    title: "The Matrix",        genres: ["Sci-Fi","Action"]     },
-  { id: "27205",  title: "Inception",          genres: ["Sci-Fi","Thriller"]   },
-  { id: "157336", title: "Interstellar",       genres: ["Sci-Fi","Drama"]      },
-  { id: "155",    title: "The Dark Knight",    genres: ["Action","Crime"]      },
-  { id: "13",     title: "Forrest Gump",       genres: ["Drama","Romance"]     },
-  { id: "550",    title: "Fight Club",         genres: ["Drama","Thriller"]    },
-  { id: "680",    title: "Pulp Fiction",       genres: ["Crime","Drama"]       },
-  { id: "120",    title: "The Lord of the Rings: The Fellowship of the Ring", genres: ["Adventure","Fantasy"] },
-]
-
 // ── URL hash helpers ──────────────────────────────────────────────────────────
 function encodeHash(ids) {
   if (!ids || ids.size === 0) return ""
@@ -148,9 +136,10 @@ export default function App() {
   const [voteAvgRange,   setVoteAvgRange]    = useState([0, 10])
   const [runtimeRange,   setRuntimeRange]    = useState([0, 300])
   const [colorMode,      setColorMode]       = useState("year")   // default: year
-  const [sizeMode,       setSizeMode]        = useState("default")
+  const [sizeMode,       setSizeMode]        = useState(null)
   const [maxNeighbors,   setMaxNeighbors]    = useState(10)
   const [graphWidth,     setGraphWidth]      = useState(window.innerWidth)
+  const [graphHeight,    setGraphHeight]     = useState(window.innerHeight)
   const [pinnedIds,      setPinnedIds]       = useState(new Set())
   const [contextMenu,    setContextMenu]     = useState(null)
   const [statsVisible,   setStatsVisible]    = useState(false)
@@ -171,6 +160,9 @@ export default function App() {
   const [moreDetailsOpen,setMoreDetailsOpen] = useState(false)
   const [cmdOpen,        setCmdOpen]         = useState(false)
   const [hasEverSelectedNode, setHasEverSelectedNode] = useState(false)
+  const [tooltipHovered, setTooltipHovered]  = useState(false)
+  const tooltipHideTimer = useRef(null)
+  const lastHoveredNodeRef = useRef(null)
 
   const yearCache        = useRef(new Map())
   const mousePosRef      = useRef({ x: 0, y: 0 })
@@ -219,6 +211,7 @@ export default function App() {
       if (panelOpen)    w -= 280
       if (statsVisible) w -= 240
       setGraphWidth(w)
+      setGraphHeight(window.innerHeight)
     }
     update()
     window.addEventListener("resize", update)
@@ -282,7 +275,7 @@ export default function App() {
     const tick = () => {
       if (!fgRef.current) { raf = requestAnimationFrame(tick); return }
       const W  = graphWidth
-      const H  = window.innerHeight
+      const H  = graphHeight
       const cx = W / 2
       const cy = H / 2
       const margin = 32
@@ -317,7 +310,7 @@ export default function App() {
     }
     raf = requestAnimationFrame(tick)
     return () => cancelAnimationFrame(raf)
-  }, [graphData.nodes, graphWidth])
+  }, [graphData.nodes, graphWidth, graphHeight])
 
   // ── URL hash: restore on mount (only after index loads) ────────────────────
   useEffect(() => {
@@ -569,24 +562,15 @@ export default function App() {
     })
     return deg
   }, [graphData])
-  const maxDeg = useMemo(() => Math.max(1, ...(nodeDegrees.size ? nodeDegrees.values() : [1])), [nodeDegrees])
-
-  // ── Avg similarity per node ─────────────────────────────────────────────────
-  const nodeAvgSim = useMemo(() => {
-    const acc = new Map(), cnt = new Map()
-    graphData.nodes.forEach(n => { acc.set(n.id, 0); cnt.set(n.id, 0) })
-    graphData.links.forEach(l => {
-      const s = typeof l.source === "object" ? l.source.id : l.source
-      const t = typeof l.target === "object" ? l.target.id : l.target
-      const v = l.strength ?? 0
-      acc.set(s, (acc.get(s) ?? 0) + v); cnt.set(s, (cnt.get(s) ?? 0) + 1)
-      acc.set(t, (acc.get(t) ?? 0) + v); cnt.set(t, (cnt.get(t) ?? 0) + 1)
-    })
-    const avg = new Map()
-    acc.forEach((sum, id) => avg.set(id, sum / (cnt.get(id) ?? 1)))
-    return avg
-  }, [graphData])
-  const maxAvgSim = useMemo(() => Math.max(1, ...(nodeAvgSim.size ? nodeAvgSim.values() : [1])), [nodeAvgSim])
+  const maxDeg = useMemo(() => {
+    // When sizing by degree, exclude expanded nodes from max calculation
+    let degreesToConsider = nodeDegrees
+    if (sizeMode === "degree") {
+      degreesToConsider = new Map(nodeDegrees)
+      loadedIds.forEach(id => degreesToConsider.delete(id))
+    }
+    return Math.max(1, ...(degreesToConsider.size ? degreesToConsider.values() : [1]))
+  }, [nodeDegrees, sizeMode, loadedIds])
 
   // ── Search suggestions (live TMDB search) ───────────────────────────────────
   useEffect(() => {
@@ -707,7 +691,7 @@ export default function App() {
       .finally(() => setDetailLoading(false))
   }, [loadedIds, graphData.nodes, pushHistory])
 
-  // Keep a fresh ref for external callers (e.g. Surprise me button)
+  // Keep a fresh ref for external callers
   expandNodeRef.current = expandNodeRaw
 
   // ── Expand all unloaded neighbors ──────────────────────────────────────────
@@ -719,14 +703,6 @@ export default function App() {
     unloaded.forEach(id => expandNodeRaw(id, movieIndexMapRef.current.get(id) ?? id, true))
   }, [graphData.nodes, loadedIds, expandNodeRaw, pushHistory])
   expandAllRef.current = handleExpandAll
-
-  // ── Surprise Me: one seed movie, expand 3 levels deep ────────────────────
-  const handleSurpriseMe = useCallback(() => {
-    const m = SEED_MOVIES[Math.floor(Math.random() * SEED_MOVIES.length)]
-    expandNodeRef.current?.(String(m.id), m.title)
-    setTimeout(() => expandAllRef.current?.(), 800)
-    setTimeout(() => expandAllRef.current?.(), 1600)
-  }, [])
 
   // ── Collapse node: keep the node, remove only isolated neighbors (degree 1) ─
   const collapseNode = useCallback((nodeId) => {
@@ -876,20 +852,35 @@ export default function App() {
   const getNodeRadius = useCallback(node => {
     if (node.isRoot) return 10
     switch (sizeMode) {
-      case "degree":     return 4 + (maxDeg > 1 ? (nodeDegrees.get(node.id) ?? 0) / maxDeg * 8 : 4)
-      case "similarity": return 4 + (maxAvgSim > 1 ? (nodeAvgSim.get(node.id) ?? 0) / maxAvgSim * 8 : 4)
-      default:           return 5 + ((node.snn ?? 10) / 50) * 5
+      case "degree": {
+        // Exclude expanded nodes from degree sizing
+        const degree = loadedIds.has(node.id) ? 0 : (nodeDegrees.get(node.id) ?? 0)
+        return 3 + (maxDeg > 1 ? degree / maxDeg * 10 : 3)
+      }
+      case "vote_avg":   {
+        const va = node.vote_avg
+        if (va == null) return 3
+        const [minVa, maxVa] = voteAvgBounds
+        const range = maxVa - minVa || 1
+        return 3 + ((va - minVa) / range) * 10
+      }
+      default:           return 5
     }
-  }, [sizeMode, nodeDegrees, maxDeg, nodeAvgSim, maxAvgSim])
+  }, [sizeMode, nodeDegrees, maxDeg, voteAvgBounds, loadedIds])
 
-  // ── Particles background: initialise once on mount ───────────────────────
+  // ── Particles background: initialise on mount + resize ───────────────────
   useEffect(() => {
-    const W = window.innerWidth, H = window.innerHeight
-    particlesRef.current = Array.from({ length: 70 }, () => ({
-      x: Math.random() * W, y: Math.random() * H,
-      vx: (Math.random() - 0.5) * 0.3,
-      vy: (Math.random() - 0.5) * 0.3,
-    }))
+    const init = () => {
+      const W = window.innerWidth, H = window.innerHeight
+      particlesRef.current = Array.from({ length: 70 }, () => ({
+        x: Math.random() * W, y: Math.random() * H,
+        vx: (Math.random() - 0.5) * 0.3,
+        vy: (Math.random() - 0.5) * 0.3,
+      }))
+    }
+    init()
+    window.addEventListener("resize", init)
+    return () => window.removeEventListener("resize", init)
   }, [])
 
   // ── Draw animated particle network in screen-space ───────────────────────
@@ -898,7 +889,7 @@ export default function App() {
     if (!ps) return
     ctx.save()
     ctx.setTransform(1, 0, 0, 1, 0, 0)
-    const W = graphWidth, H = window.innerHeight
+    const W = window.innerWidth, H = window.innerHeight
     const linkDist = 130
     const base = darkMode ? '232,228,222' : '45,42,38'
     const maxA  = darkMode ? 0.18 : 0.11
@@ -961,10 +952,20 @@ export default function App() {
     ctx.beginPath(); ctx.arc(node.x, node.y, radius * 2.8, 0, 2 * Math.PI)
     ctx.fillStyle = baseColor + "28"; ctx.fill()
 
-    // expanded ring
+    // expanded ring — thicker and more prominent for expanded nodes
     if (expanded && !isRoot) {
       ctx.beginPath(); ctx.arc(node.x, node.y, radius + 2.5, 0, 2 * Math.PI)
-      ctx.strokeStyle = baseColor + "88"; ctx.lineWidth = 1; ctx.stroke()
+      ctx.strokeStyle = baseColor + "cc"; ctx.lineWidth = 4; ctx.stroke()
+    }
+
+    // root node double rings — distinctive double concentric rings
+    if (isRoot) {
+      // outer solid ring
+      ctx.beginPath(); ctx.arc(node.x, node.y, radius + 3.5, 0, 2 * Math.PI)
+      ctx.strokeStyle = baseColor; ctx.lineWidth = 2.5; ctx.stroke()
+      // inner hollow ring
+      ctx.beginPath(); ctx.arc(node.x, node.y, radius + 5.5, 0, 2 * Math.PI)
+      ctx.strokeStyle = baseColor + "66"; ctx.lineWidth = 1.5; ctx.stroke()
     }
 
     // hover rings
@@ -976,9 +977,14 @@ export default function App() {
       ctx.strokeStyle = accent + "72"; ctx.lineWidth = 1.5; ctx.stroke()
     }
 
-    // core
+    // core — very dimmed if expanded (non-root)
     ctx.beginPath(); ctx.arc(node.x, node.y, radius, 0, 2 * Math.PI)
-    ctx.fillStyle = baseColor; ctx.fill()
+    if (expanded && !isRoot) {
+      ctx.fillStyle = baseColor + "22"; // very dim, only 13% opacity
+    } else {
+      ctx.fillStyle = baseColor;
+    }
+    ctx.fill()
 
     // pin dot
     if (node.fx != null) {
@@ -998,7 +1004,7 @@ export default function App() {
 
     ctx.globalAlpha = 1
   }, [loadedIds, visibleGraph.links, filterHighlightIds, colorMode, sizeMode,
-      nodeDegrees, maxDeg, nodeAvgSim, maxAvgSim, pinnedIds,
+      nodeDegrees, maxDeg, voteAvgBounds, pinnedIds,
       hoveredNode, hoveredNeighborIds, accent, theme, getNodeRadius])
 
   // ── Render ──────────────────────────────────────────────────────────────────
@@ -1111,56 +1117,6 @@ export default function App() {
             </div>
           )}
 
-          {graphData.nodes.length > 0 && (
-            <>
-              <div style={{ ...s.pillRow, alignItems: "center" }}>
-                <span style={{ ...s.pillRowLabel, color: theme.textFaint }}>rating</span>
-                <span style={{ ...s.rangeValue, color: theme.textMuted }}>{voteAvgRange[0].toFixed(1)} – {voteAvgRange[1].toFixed(1)}</span>
-                <div style={{ width: 120, margin: "0 6px" }}>
-                  <Slider
-                    range
-                    min={voteAvgBounds[0]}
-                    max={voteAvgBounds[1]}
-                    step={0.1}
-                    value={voteAvgRange}
-                    onChange={setVoteAvgRange}
-                    allowCross={false}
-                    styles={{
-                      track: { backgroundColor: accent },
-                      handle: { borderColor: accent, backgroundColor: theme.surface },
-                    }}
-                  />
-                </div>
-                {(voteAvgRange[0] > voteAvgBounds[0] || voteAvgRange[1] < voteAvgBounds[1]) && (
-                  <button style={{ ...s.pillClear, color: theme.textFaint }} onClick={() => setVoteAvgRange([voteAvgBounds[0], voteAvgBounds[1]])}>✕</button>
-                )}
-              </div>
-
-              <div style={{ ...s.pillRow, alignItems: "center" }}>
-                <span style={{ ...s.pillRowLabel, color: theme.textFaint }}>runtime</span>
-                <span style={{ ...s.rangeValue, color: theme.textMuted }}>{runtimeRange[0]}m – {runtimeRange[1]}m</span>
-                <div style={{ width: 120, margin: "0 6px" }}>
-                  <Slider
-                    range
-                    min={runtimeBounds[0]}
-                    max={runtimeBounds[1]}
-                    step={5}
-                    value={runtimeRange}
-                    onChange={setRuntimeRange}
-                    allowCross={false}
-                    styles={{
-                      track: { backgroundColor: accent },
-                      handle: { borderColor: accent, backgroundColor: theme.surface },
-                    }}
-                  />
-                </div>
-                {(runtimeRange[0] > runtimeBounds[0] || runtimeRange[1] < runtimeBounds[1]) && (
-                  <button style={{ ...s.pillClear, color: theme.textFaint }} onClick={() => setRuntimeRange([runtimeBounds[0], runtimeBounds[1]])}>✕</button>
-                )}
-              </div>
-            </>
-          )}
-
           <div style={s.pillRow}>
             <span style={{ ...s.pillRowLabel, color: theme.textFaint }}>color by</span>
             {COLOR_MODES.map(mode => {
@@ -1169,13 +1125,10 @@ export default function App() {
                 style={{ ...s.filterPill, background: active ? theme.accentBg : theme.pill, borderColor: active ? theme.accentBorder : theme.pillBorder, color: active ? accent : theme.pillText }}
                 onClick={() => setColorMode(mode.id)}>{mode.label}</button>
             })}
-          </div>
-
-          <div style={s.pillRow}>
-            <span style={{ ...s.pillRowLabel, color: theme.textFaint }}>size by</span>
-            {[{id:"default",label:"Default"},{id:"degree",label:"Degree"},{id:"similarity",label:"Similarity"}].map(mode => {
+            <span style={{ ...s.pillRowLabel, color: theme.textFaint, marginLeft: 12 }}>size by</span>
+            {[{id:null,label:"None"},{id:"degree",label:"Degree"},{id:"vote_avg",label:"Avg rating"}].map(mode => {
               const active = sizeMode === mode.id
-              return <button key={mode.id}
+              return <button key={mode.id ?? "none"}
                 style={{ ...s.filterPill, background: active ? theme.accentBg : theme.pill, borderColor: active ? theme.accentBorder : theme.pillBorder, color: active ? accent : theme.pillText }}
                 onClick={() => setSizeMode(mode.id)}>{mode.label}</button>
             })}
@@ -1223,16 +1176,25 @@ export default function App() {
       )}
 
       {/* ── Tooltip ──────────────────────────────────────────────── */}
-      {hoveredNode && (
-        <div style={{ ...s.tooltip, background: theme.tooltipBg, borderColor: theme.border, left: Math.min(tooltipPos.x + 16, window.innerWidth - 260), top: Math.max(10, tooltipPos.y - 120) }}>
-          <span style={{ ...s.tooltipTitle, color: theme.text }}>{hoveredNode.title}</span>
+      {(hoveredNode || tooltipHovered) && lastHoveredNodeRef.current && (
+        <div
+          style={{ ...s.tooltip, background: theme.tooltipBg, borderColor: theme.border, left: Math.min(tooltipPos.x + 16, window.innerWidth - 260), top: Math.max(10, tooltipPos.y - 120) }}
+          onMouseEnter={() => { clearTimeout(tooltipHideTimer.current); setTooltipHovered(true) }}
+          onMouseLeave={() => { setTooltipHovered(false); setHoveredNode(null) }}
+        >
+          <span style={{ ...s.tooltipTitle, color: theme.text }}>{lastHoveredNodeRef.current.title}</span>
           <span style={{ ...s.tooltipMeta, color: theme.textMuted }}>
-            {(hoveredNode.year || yearCache.current.get(hoveredNode.id)) ? (hoveredNode.year || yearCache.current.get(hoveredNode.id)) : ""}
-            {hoveredNode.vote_avg != null && ` ★ ${hoveredNode.vote_avg.toFixed(1)}`}
-            {hoveredNode.runtime != null && ` · ${hoveredNode.runtime} min`}
+            {(lastHoveredNodeRef.current.year || yearCache.current.get(lastHoveredNodeRef.current.id)) ? (lastHoveredNodeRef.current.year || yearCache.current.get(lastHoveredNodeRef.current.id)) : ""}
+            {lastHoveredNodeRef.current.vote_avg != null && ` ★ ${lastHoveredNodeRef.current.vote_avg.toFixed(1)}`}
+            {lastHoveredNodeRef.current.runtime != null && ` · ${lastHoveredNodeRef.current.runtime} min`}
           </span>
-          {hoveredNode.snn != null && <span style={{ ...s.tooltipSnn, color: accent }}>Similarity: {hoveredNode.snn}</span>}
-          {!loadedIds.has(hoveredNode.id) && <span style={{ ...s.tooltipHint, color: theme.textMuted }}>click to expand</span>}
+          <div style={{ display: "flex", gap: 6, marginTop: 4, pointerEvents: "auto" }}>
+            <button onClick={(e) => { e.stopPropagation(); collapseNode(lastHoveredNodeRef.current.id) }} style={{ ...s.tooltipBtn, borderColor: theme.border, color: theme.textMuted }} title="Collapse">−</button>
+            <button onClick={(e) => { e.stopPropagation(); const id = String(lastHoveredNodeRef.current.id); setGraphData(prev => ({ nodes: prev.nodes.filter(n => String(n.id) !== id), links: prev.links.filter(l => { const s = typeof l.source==="object"?l.source.id:l.source; const t = typeof l.target==="object"?l.target.id:l.target; return String(s) !== id && String(t) !== id }) })); setPinnedIds(prev => { const next = new Set(prev); next.delete(id); return next }); setLoadedIds(prev => { const next = new Set(prev); next.delete(id); return next }); setHoveredNode(null); setTooltipHovered(false) }} style={{ ...s.tooltipBtn, borderColor: theme.border, color: theme.textMuted }} title="Remove">×</button>
+            <button onClick={(e) => { e.stopPropagation(); const id = String(lastHoveredNodeRef.current.id); setPinnedIds(prev => new Set([...prev, id])) }} style={{ ...s.tooltipBtn, borderColor: theme.border, color: theme.textMuted }} title="Focus">◎</button>
+            <button onClick={(e) => { e.stopPropagation(); setSelectedNode(lastHoveredNodeRef.current); setPanelUserClosed(false) }} style={{ ...s.tooltipBtn, borderColor: theme.border, color: theme.textMuted }} title="Show details">ℹ</button>
+          </div>
+          {!loadedIds.has(lastHoveredNodeRef.current.id) && <span style={{ ...s.tooltipHint, color: theme.textMuted }}>click to expand</span>}
         </div>
       )}
 
@@ -1241,7 +1203,8 @@ export default function App() {
         <ForceGraph2D
           ref={fgRef}
           graphData={visibleGraph}
-          width={graphWidth}
+          width={window.innerWidth}
+          height={window.innerHeight}
           backgroundColor={theme.bg}
           nodeLabel={() => ""}
           nodeCanvasObject={drawNode}
@@ -1271,7 +1234,7 @@ export default function App() {
             }
             return theme.linkColor
           }}
-          linkWidth={l => 0.6 + ((l.strength ?? 10) / 50) * 1.5}
+          linkWidth={0.8}
           linkDirectionalParticles={l => {
             if (!hoveredNode) return 0
             const s = typeof l.source === "object" ? l.source.id : l.source
@@ -1294,8 +1257,16 @@ export default function App() {
             lastBgClickRef.current = now
           }}
           onNodeHover={node => {
-            setHoveredNode(node ?? null)
-            if (node) setTooltipPos({ x: mousePosRef.current.x, y: mousePosRef.current.y })
+            if (node) {
+              clearTimeout(tooltipHideTimer.current)
+              lastHoveredNodeRef.current = node
+              setHoveredNode(node)
+              setTooltipPos({ x: mousePosRef.current.x, y: mousePosRef.current.y })
+            } else {
+              tooltipHideTimer.current = setTimeout(() => {
+                if (!tooltipHovered) setHoveredNode(null)
+              }, 150)
+            }
           }}
           onRenderFramePre={drawParticles}
           warmupTicks={60}
@@ -1341,12 +1312,6 @@ export default function App() {
         <div style={s.emptyState}>
           <div style={{ ...s.emptyIcon, color: theme.emptyIcon }}>◎</div>
           <p style={{ ...s.emptyText, color: theme.emptyText }}>Search for a film above.<br />Click any node to expand its recommendation network.</p>
-          <button
-            style={{ ...s.surpriseBtn, background: theme.accentBg, color: theme.accent, borderColor: theme.accent }}
-            onClick={handleSurpriseMe}
-          >
-            Surprise me!
-          </button>
           <p style={{ ...s.helpHint, color: theme.textFaint }}>Drag nodes · Right-click for options · Scroll to zoom</p>
         </div>
       )}
@@ -1386,7 +1351,6 @@ export default function App() {
             <div style={{ padding: "9px 14px", borderBottom: `1px solid ${theme.border}`, fontSize: 11, color: theme.textMuted, letterSpacing: "0.08em", fontWeight: 600 }}>COMMANDS</div>
             {[
               { label: "Search a movie",       kbd: "/",  action: () => { searchInputRef.current?.focus(); setCmdOpen(false) } },
-              { label: "Surprise me!",         kbd: "",   action: () => { handleSurpriseMe(); setCmdOpen(false) } },
               { label: "Expand all",           kbd: "",   action: () => { expandAllRef.current?.(); setCmdOpen(false) } },
               { label: "Show / hide stats",    kbd: "D",  action: () => { setStatsVisible(v => !v); setCmdOpen(false) } },
               { label: "Show / hide details",  kbd: "M",  action: () => { if (selectedNode) setPanelUserClosed(v => !v); setCmdOpen(false) } },
@@ -1621,6 +1585,7 @@ function makeStyles(theme) {
     tooltipMeta:    { fontSize: 11, fontFamily: "monospace" },
     tooltipSnn:     { fontSize: 12, fontFamily: "monospace" },
     tooltipHint:    { fontSize: 11, fontFamily: "'DM Sans', sans-serif", marginTop: 2 },
+    tooltipBtn:     { width: 24, height: 24, borderRadius: "50%", border: "1px solid", background: "transparent", cursor: "pointer", fontSize: 12, display: "flex", alignItems: "center", justifyContent: "center", padding: 0, pointerEvents: "auto", transition: "all 0.15s" },
     emptyState:     { position: "absolute", top: "50%", left: "50%", transform: "translate(-50%, -50%)", textAlign: "center", pointerEvents: "auto", zIndex: 5 },
     emptyIcon:      { fontSize: 48, marginBottom: 16 },
     emptyText:      { fontSize: 14, fontFamily: "'DM Sans', sans-serif", lineHeight: 1.7, margin: "0 0 8px" },
