@@ -1,6 +1,6 @@
 const TMDB_IMG = "https://image.tmdb.org/t/p/w300"
 
-export default function MoviePanel({ node, loadingDetails, theme, onClose, onMoreDetails }) {
+export default function MoviePanel({ node, loadingDetails, theme, onClose, onMoreDetails, mode }) {
   const t = theme ?? { surface: "#fdfbf7", border: "rgba(0,0,0,0.06)", text: "#2d2a26", textMuted: "rgba(45,42,38,0.45)", textFaint: "rgba(45,42,38,0.35)", accent: "#c47e2a", accentBg: "rgba(196,126,42,0.12)" }
 
   if (!node) return null
@@ -13,9 +13,10 @@ export default function MoviePanel({ node, loadingDetails, theme, onClose, onMor
   const imdbId   = node.imdb_id ?? null
   const rating   = node.vote_avg ?? null
   const runtime  = node.runtime ?? null
-  const runtimeDisplay = runtime
-    ? (typeof runtime === "number" ? `${runtime} min` : String(runtime))
-    : null
+  const seasons  = node.seasons ?? null
+  const runtimeDisplay = mode === "tv"
+    ? (seasons != null ? `${seasons} season${seasons !== 1 ? "s" : ""}` : runtime ? `${runtime} min/ep` : null)
+    : (runtime ? (typeof runtime === "number" ? `${runtime} min` : String(runtime)) : null)
   const director = node.director ?? null
   const cast     = node.cast ?? []
   const overview = node.overview ?? ""
@@ -28,14 +29,14 @@ export default function MoviePanel({ node, loadingDetails, theme, onClose, onMor
       {posterUrl ? (
         <img src={posterUrl} alt={title} style={s.poster} />
       ) : (
-        <div style={{ ...s.posterPlaceholder, background: t.border }}>🎬</div>
+        <div style={{ ...s.posterPlaceholder, background: t.border }}>{mode === "tv" ? "📺" : "🎦"}</div>
       )}
 
       <div style={{ ...s.title, color: t.text }}>{title}</div>
 
       {(node.tmdb_id ?? node.id) && (
         <a
-          href={`https://www.themoviedb.org/movie/${node.tmdb_id ?? node.id}`}
+          href={`https://www.themoviedb.org/${mode === "tv" ? "tv" : "movie"}/${node.tmdb_id ?? node.id}`}
           target="_blank"
           rel="noopener noreferrer"
           style={{ ...s.tmdbLink, color: t.accent }}

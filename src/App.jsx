@@ -5,7 +5,7 @@ import "rc-slider/assets/index.css"
 import MoviePanel from "./MoviePanel"
 import ContextMenu from "./ContextMenu"
 import StatsPanel from "./StatsPanel"
-import { fetchMovieData, searchMovies, fetchMovieExtras } from "./tmdbApi"
+import { fetchMovieData, searchMovies, fetchMovieExtras, fetchTVData, searchTV, fetchTVExtras } from "./tmdbApi"
 
 // ── Theme definitions ─────────────────────────────────────────────────────────
 const THEMES = {
@@ -70,6 +70,10 @@ const GENRE_COLORS = {
   Drama:       "#8b5cf6", Fantasy:     "#d946ef", Horror:      "#f43f5e",
   Mystery:     "#0ea5e9", Romance:     "#ec4899", "Sci-Fi":    "#6366f1",
   Thriller:    "#f59e0b", War:         "#78716c", Western:     "#a16207",
+  // TV-specific genres
+  "Action & Adventure": "#ef4444", "Sci-Fi & Fantasy": "#6366f1",
+  "War & Politics": "#78716c", Kids: "#facc15", News: "#64748b",
+  Reality: "#84cc16", Soap: "#ec4899", Talk: "#0ea5e9",
   _default:    "#4ab3f4",
 }
 function genreColor(genres) {
@@ -161,7 +165,9 @@ export default function App() {
   const [cmdOpen,        setCmdOpen]         = useState(false)
   const [hasEverSelectedNode, setHasEverSelectedNode] = useState(false)
   const [tooltipHovered, setTooltipHovered]  = useState(false)
+  const [mode,           setMode]            = useState("movie") // "movie" | "tv"
   const tooltipHideTimer = useRef(null)
+  const modeRef          = useRef("movie")
   const lastHoveredNodeRef = useRef(null)
 
   const yearCache        = useRef(new Map())
@@ -248,12 +254,16 @@ export default function App() {
     fg.d3Force("link")?.distance(80)
   })
 
+  // ── Keep modeRef in sync ──────────────────────────────────────────────────
+  useEffect(() => { modeRef.current = mode }, [mode])
+
   // ── Lazy year fetch for tooltip ─────────────────────────────────────────────
   useEffect(() => {
     if (!hoveredNode || hoveredNode.year) return
     const id = hoveredNode.id
     if (yearCache.current.has(id)) return
-    fetchMovieData(id).then(d => {
+    const fetchData = modeRef.current === "tv" ? fetchTVData : fetchMovieData
+    fetchData(id).then(d => {
       const y = d.meta?.year
       if (y) {
         yearCache.current.set(id, y)
@@ -577,7 +587,7 @@ export default function App() {
     if (query.length < 2) { setSuggestions([]); setSearchIdx(-1); return }
     const timer = setTimeout(async () => {
       try {
-        const results = await searchMovies(query)
+        const results = mode === "tv" ? await searchTV(query) : await searchMovies(query)
         setSuggestions(results.slice(0, 8))
       } catch (e) {
         console.warn("Search failed:", e)
@@ -586,7 +596,7 @@ export default function App() {
       setSearchIdx(-1)
     }, 250)
     return () => clearTimeout(timer)
-  }, [query])
+  }, [query, mode])
 
   // ── History helpers ─────────────────────────────────────────────────────────
   const snapshot = useCallback(() => ({
@@ -619,7 +629,7 @@ export default function App() {
       setLoadedIds(prev => new Set([...prev, movieId]))
 
       let data
-      try { data = await fetchMovieData(movieId) }
+      try { data = await (modeRef.current === "tv" ? fetchTVData : fetchMovieData)(movieId) }
       catch (e) { console.warn(e); setLoading(false); return }
 
       meta = data.meta
@@ -640,18 +650,18 @@ export default function App() {
         const isFirstNode = newNodes.length === 0
 
         if (!existingIds.has(movieId)) {
-          newNodes.push({ id: movieId, title: meta.title || movieIndexMapRef.current.get(String(movieId)) || movieTitle || movieId, genres: meta.genres ?? [], year: meta.year, poster: meta.poster, overview: meta.overview, vote_avg: meta.vote_avg, runtime: meta.runtime, tmdb_id: meta.tmdb_id ?? movieId, imdb_id: meta.imdb_id, isRoot: isFirstNode })
+          newNodes.push({ id: movieId, title: meta.title || movieIndexMapRef.current.get(String(movieId)) || movieTitle || movieId, genres: meta.genres ?? [], year: meta.year, poster: meta.poster, overview: meta.overview, vote_avg: meta.vote_avg, runtime: meta.runtime, seasons: meta.seasons, mediaType: meta.mediaType, tmdb_id: meta.tmdb_id ?? movieId, imdb_id: meta.imdb_id, isRoot: isFirstNode })
           existingIds.add(movieId)
         } else {
           const n = newNodes.find(n => String(n.id) === movieId)
-          if (n) Object.assign(n, { title: meta.title || n.title, genres: meta.genres ?? [], year: meta.year, poster: meta.poster, overview: meta.overview, vote_avg: meta.vote_avg, runtime: meta.runtime, tmdb_id: meta.tmdb_id ?? movieId, imdb_id: meta.imdb_id })
+          if (n) Object.assign(n, { title: meta.title || n.title, genres: meta.genres ?? [], year: meta.year, poster: meta.poster, overview: meta.overview, vote_avg: meta.vote_avg, runtime: meta.runtime, seasons: meta.seasons, mediaType: meta.mediaType, tmdb_id: meta.tmdb_id ?? movieId, imdb_id: meta.imdb_id })
           if (isFirstNode && n) n.isRoot = true
         }
 
         for (const nb of neighbors) {
           const nbId = String(nb.id)
           if (!existingIds.has(nbId)) {
-            newNodes.push({ id: nbId, title: nb.title || movieIndexMapRef.current.get(nbId) || nbId, genres: nb.genres ?? [], year: nb.year ?? null, snn: nb.snn, vote_avg: nb.vote_avg, runtime: nb.runtime, tmdb_id: nb.tmdb_id ?? nbId })
+            newNodes.push({ id: nbId, title: nb.title || movieIndexMapRef.current.get(nbId) || nbId, genres: nb.genres ?? [], year: nb.year ?? null, snn: nb.snn, vote_avg: nb.vote_avg, runtime: nb.runtime, seasons: nb.seasons, mediaType: nb.mediaType, tmdb_id: nb.tmdb_id ?? nbId })
             existingIds.add(nbId)
           }
           const key = `${movieId}__${nbId}`, keyRev = `${nbId}__${movieId}`
@@ -680,7 +690,7 @@ export default function App() {
 
     // Fetch detailed metadata from TMDB on-the-fly (for both new and existing nodes)
     setDetailLoading(true)
-    fetchMovieExtras(tmdbId)
+    ;(modeRef.current === "tv" ? fetchTVExtras : fetchMovieExtras)(tmdbId)
       .then((extras) => {
         setSelectedNode((prev) => (prev && String(prev.id) === movieId
           ? { ...prev, ...extras }
@@ -796,6 +806,28 @@ export default function App() {
     setRuntimeRange([0, 300])
     setHistory([])
     setFuture([])
+  }
+
+  const handleModeChange = (newMode) => {
+    if (newMode === mode) return
+    setGraphData({ nodes: [], links: [] })
+    setLoadedIds(new Set())
+    setHoveredNode(null)
+    setSelectedNode(null)
+    setPinnedIds(new Set())
+    setPanelUserClosed(false)
+    setPanelHasNew(false)
+    setContextMenu(null)
+    setActiveGenres(new Set())
+    setActiveDecade(null)
+    setVoteAvgRange([0, 10])
+    setRuntimeRange([0, 300])
+    setHistory([])
+    setFuture([])
+    setQuery("")
+    setSuggestions([])
+    yearCache.current = new Map()
+    setMode(newMode)
   }
 
   const handleSearchKeyDown = e => {
@@ -1021,6 +1053,18 @@ export default function App() {
       <header style={{ ...s.header, background: theme.headerBg }}>
         <h1 style={{ ...s.logo, color: theme.text }}>CINE<span style={{ color: accent }}>GRAPH</span></h1>
 
+        {/* ── Mode toggle ─────────────────────────────────────── */}
+        <div style={{ display: "flex", flexShrink: 0, background: theme.pill, borderRadius: 20, padding: 2, border: `1px solid ${theme.pillBorder}` }}>
+          <button
+            style={{ padding: "4px 12px", borderRadius: 18, border: "none", fontSize: 11, fontFamily: "'DM Sans', sans-serif", cursor: "pointer", transition: "all 0.15s", background: mode === "movie" ? theme.accentBg : "transparent", color: mode === "movie" ? accent : theme.pillText }}
+            onClick={() => handleModeChange("movie")}
+          >🎬 Movies</button>
+          <button
+            style={{ padding: "4px 12px", borderRadius: 18, border: "none", fontSize: 11, fontFamily: "'DM Sans', sans-serif", cursor: "pointer", transition: "all 0.15s", background: mode === "tv" ? theme.accentBg : "transparent", color: mode === "tv" ? accent : theme.pillText }}
+            onClick={() => handleModeChange("tv")}
+          >📺 Series</button>
+        </div>
+
         <div style={s.navBtns}>
           <button style={{ ...s.navBtn, color: history.length ? theme.text : theme.textFaint, borderColor: theme.border }} onClick={handleGoBack}  disabled={!history.length} title="Go back">←</button>
           <button style={{ ...s.navBtn, color: future.length  ? theme.text : theme.textFaint, borderColor: theme.border }} onClick={handleGoForward} disabled={!future.length}  title="Go forward">→</button>
@@ -1031,7 +1075,7 @@ export default function App() {
             style={{ ...s.input, background: theme.inputBg, borderColor: theme.inputBorder, color: theme.text }}
             value={query} onChange={e => setQuery(e.target.value)}
             onKeyDown={handleSearchKeyDown}
-            placeholder={indexLoading ? "Loading index…" : "Search a movie to begin…"}
+            placeholder={indexLoading ? "Loading index…" : mode === "tv" ? "Search a series to begin…" : "Search a movie to begin…"}
             autoComplete="off"
           />
           {suggestions.length > 0 && (
@@ -1087,7 +1131,7 @@ export default function App() {
         <div style={{ ...s.filtersOverlay, left: statsVisible ? 268 : 28 }}>
           <div style={{ ...s.statusRow, color: theme.textMuted }}>
             <span style={s.statusDot} />
-            {graphData.nodes.length} movies &nbsp;·&nbsp; {graphData.links.length} connections
+            {graphData.nodes.length} {mode === "tv" ? "series" : "movies"} &nbsp;·&nbsp; {graphData.links.length} connections
             {loading && <span style={{ marginLeft: 12, opacity: 0.5 }}>loading…</span>}
           </div>
 
@@ -1311,7 +1355,7 @@ export default function App() {
       {isEmpty && (
         <div style={s.emptyState}>
           <div style={{ ...s.emptyIcon, color: theme.emptyIcon }}>◎</div>
-          <p style={{ ...s.emptyText, color: theme.emptyText }}>Search for a film above.<br />Click any node to expand its recommendation network.</p>
+          <p style={{ ...s.emptyText, color: theme.emptyText }}>{mode === "tv" ? "Search for a series above." : "Search for a film above."}<br />Click any node to expand its recommendation network.</p>
           <p style={{ ...s.helpHint, color: theme.textFaint }}>Drag nodes · Right-click for options · Scroll to zoom</p>
         </div>
       )}
@@ -1350,7 +1394,7 @@ export default function App() {
           >
             <div style={{ padding: "9px 14px", borderBottom: `1px solid ${theme.border}`, fontSize: 11, color: theme.textMuted, letterSpacing: "0.08em", fontWeight: 600 }}>COMMANDS</div>
             {[
-              { label: "Search a movie",       kbd: "/",  action: () => { searchInputRef.current?.focus(); setCmdOpen(false) } },
+              { label: mode === "tv" ? "Search a series" : "Search a movie",       kbd: "/",  action: () => { searchInputRef.current?.focus(); setCmdOpen(false) } },
               { label: "Expand all",           kbd: "",   action: () => { expandAllRef.current?.(); setCmdOpen(false) } },
               { label: "Show / hide stats",    kbd: "D",  action: () => { setStatsVisible(v => !v); setCmdOpen(false) } },
               { label: "Show / hide details",  kbd: "M",  action: () => { if (selectedNode) setPanelUserClosed(v => !v); setCmdOpen(false) } },
@@ -1451,7 +1495,7 @@ export default function App() {
       )}
 
       {/* ── Stats panel ──────────────────────────────────────────── */}
-      {statsVisible && <StatsPanel graphData={visibleGraph} darkMode={darkMode} theme={theme} onClose={() => setStatsVisible(false)} filterHighlightIds={filterHighlightIds} />}
+      {statsVisible && <StatsPanel graphData={visibleGraph} darkMode={darkMode} theme={theme} onClose={() => setStatsVisible(false)} filterHighlightIds={filterHighlightIds} mode={mode} />}
       {!isEmpty && (
         <button
           style={{ ...s.sideTabLeft, left: statsVisible ? 240 : 0, background: theme.tabBg, borderColor: theme.border, color: accent }}
@@ -1461,7 +1505,7 @@ export default function App() {
       )}
 
       {/* ── Movie panel ───────────────────────────────────────────── */}
-      {panelOpen && <MoviePanel key={selectedNode?.id} node={selectedNode} loadingDetails={detailLoading} darkMode={darkMode} theme={theme} onClose={() => setPanelUserClosed(true)} onMoreDetails={() => setMoreDetailsOpen(true)} />}
+      {panelOpen && <MoviePanel key={selectedNode?.id} node={selectedNode} loadingDetails={detailLoading} darkMode={darkMode} theme={theme} onClose={() => setPanelUserClosed(true)} onMoreDetails={() => setMoreDetailsOpen(true)} mode={mode} />}
 
       {/* ── More details modal ───────────────────────────────────── */}
       {moreDetailsOpen && selectedNode && (
@@ -1512,7 +1556,7 @@ export default function App() {
             {(selectedNode.imdb_id || selectedNode.tmdb_id) && (
               <section style={{ display: "flex", gap: 16, flexWrap: "wrap" }}>
                 {selectedNode.tmdb_id && (
-                  <a href={`https://www.themoviedb.org/movie/${selectedNode.tmdb_id}`} target="_blank" rel="noopener noreferrer" style={{ color: theme.accent }}>View on TMDB ↗</a>
+                  <a href={`https://www.themoviedb.org/${mode === "tv" ? "tv" : "movie"}/${selectedNode.tmdb_id}`} target="_blank" rel="noopener noreferrer" style={{ color: theme.accent }}>View on TMDB ↗</a>
                 )}
                 {selectedNode.imdb_id && (
                   <a href={`https://www.imdb.com/title/${selectedNode.imdb_id}`} target="_blank" rel="noopener noreferrer" style={{ color: theme.accent }}>View on IMDb ↗</a>

@@ -34,7 +34,7 @@ function Histogram({ title, buckets, maxCount, theme }) {
   )
 }
 
-export default function StatsPanel({ graphData, theme, onClose, filterHighlightIds }) {
+export default function StatsPanel({ graphData, theme, onClose, filterHighlightIds, mode }) {
   const t = theme ?? { surface: "#fdfbf7", border: "rgba(0,0,0,0.06)", text: "#2d2a26", textMuted: "#8a8278", textFaint: "rgba(45,42,38,0.35)", accent: "#c47e2a" }
   const stats = useMemo(() => {
     const nodes = graphData.nodes
@@ -133,7 +133,7 @@ export default function StatsPanel({ graphData, theme, onClose, filterHighlightI
       <div style={{ ...s.title, color: t.text }}>Network stats</div>
 
       <div style={s.row}>
-        <span style={{ ...s.label, color: t.textMuted }}>Movies</span>
+        <span style={{ ...s.label, color: t.textMuted }}>{mode === "tv" ? "Series" : "Movies"}</span>
         <span style={{ ...s.value, color: t.text }}>
           {stats.nodeCount - stats.fadedCount}
           {stats.fadedCount > 0 && (

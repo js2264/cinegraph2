@@ -115,3 +115,85 @@ export async function fetchMovieExtras(tmdbId) {
     imdb_id: externalIds.imdb_id || null,
   }
 }
+
+// ── TV Series ─────────────────────────────────────────────────────────────────
+
+const TV_GENRE_MAP = {
+  10759: "Action & Adventure", 16: "Animation", 35: "Comedy", 80: "Crime",
+  99: "Documentary", 18: "Drama", 10751: "Family", 10762: "Kids",
+  9648: "Mystery", 10763: "News", 10764: "Reality", 10765: "Sci-Fi & Fantasy",
+  10766: "Soap", 10767: "Talk", 10768: "War & Politics", 37: "Western",
+}
+
+export function mapTVGenreIds(ids) {
+  return ids?.map(id => TV_GENRE_MAP[id] || null).filter(Boolean) || []
+}
+
+export async function fetchTVData(seriesId) {
+  const [details, recs] = await Promise.all([
+    tmdbFetch(`/tv/${seriesId}`),
+    tmdbFetch(`/tv/${seriesId}/recommendations`),
+  ])
+
+  const meta = {
+    title: details.name,
+    genres: mapTVGenreIds(details.genres?.map(g => g.id) || details.genre_ids),
+    year: details.first_air_date ? parseInt(details.first_air_date.slice(0, 4), 10) : null,
+    tmdb_id: details.id,
+    poster: details.poster_path,
+    overview: details.overview,
+    vote_avg: details.vote_average,
+    runtime: details.episode_run_time?.[0] ?? null,
+    seasons: details.number_of_seasons ?? null,
+    mediaType: "tv",
+  }
+
+  const neighbors = (recs.results || []).map(r => ({
+    id: String(r.id),
+    title: r.name,
+    genres: mapTVGenreIds(r.genre_ids),
+    year: r.first_air_date ? parseInt(r.first_air_date.slice(0, 4), 10) : null,
+    poster: r.poster_path,
+    vote_avg: r.vote_average,
+    snn: Math.round((r.vote_average || 5) * 5),
+    tmdb_id: r.id,
+    mediaType: "tv",
+  }))
+
+  return { meta, neighbors }
+}
+
+export async function searchTV(query) {
+  const data = await tmdbFetch(`/search/tv?query=${encodeURIComponent(query)}&page=1`)
+  return (data.results || [])
+    .filter(r => r.id && r.name)
+    .map(r => ({
+      id: String(r.id),
+      title: r.name,
+      genres: mapTVGenreIds(r.genre_ids),
+      year: r.first_air_date ? parseInt(r.first_air_date.slice(0, 4), 10) : null,
+    }))
+}
+
+export async function fetchTVExtras(seriesId) {
+  const [credits, providers, externalIds] = await Promise.all([
+    tmdbFetch(`/tv/${seriesId}/credits`),
+    tmdbFetch(`/tv/${seriesId}/watch/providers`),
+    tmdbFetch(`/tv/${seriesId}/external_ids`),
+  ])
+
+  const creator = credits.crew?.find(p => p.job === "Executive Producer")?.name
+    || credits.crew?.[0]?.name
+    || null
+  const cast = credits.cast?.slice(0, 5).map(p => p.name) || []
+
+  const region = providers.results?.US || Object.values(providers.results || {})[0]
+  const watchProviders = region?.flatrate?.map(p => p.provider_name) || []
+
+  return {
+    director: creator,
+    cast,
+    watchProviders,
+    imdb_id: externalIds.imdb_id || null,
+  }
+}
